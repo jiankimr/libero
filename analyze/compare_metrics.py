@@ -12,6 +12,10 @@ Compare Metrics between two conditions (before/after noise)
     --before_dir ./analysis/analysis_libero_10_20251107_172053_noise_00000/ \
     --after_dir ./analysis/analysis_libero_10_20251107_145142_noise_05000_dim_action.eef_pos_delta[2]/
     (output txt 자동생성)
+python analyze/compare_metrics.py \
+    --before_dir ./analysis/analysis_libero_10_20251107_172053_noise_00000/ \
+    --after_dir ./analysis/analysis_libero_10_20251111_191338_noise_02500_dim_action.eef_pos_delta[0]/
+    _191338_noise_02500_dim_action.eef_pos
 
 (--output_npy_csv 옵션)
 --output_npy_csv ./results/comparison_npy.csv
@@ -35,6 +39,20 @@ except ImportError:
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s:%(name)s: %(message)s')
 logger = logging.getLogger(__name__)
+
+
+# ⚙️ 조인트별 토크 한계값 (Nm) - 매뉴얼 입력
+# 각 조인트의 최대 허용 토크 (실제 로봇 스펙에 맞게 수정)
+JOINT_TORQUE_LIMITS = np.array([
+    #https://frankarobotics.github.io/docs/control_parameters.html#limits-for-franka-research-3
+    87.0,  # Joint 0 최대 토크 (Nm)
+    87.0,  # Joint 1 최대 토크 (Nm)
+    87.0,  # Joint 2 최대 토크 (Nm)
+    87.0,  # Joint 3 최대 토크 (Nm)
+    12.0,  # Joint 4 최대 토크 (Nm)
+    12.0,  # Joint 5 최대 토크 (Nm)
+    12.0,  # Joint 6 최대 토크 (Nm)
+])
 
 
 # 주요 비교 메트릭 정의
@@ -538,16 +556,15 @@ def compare_csv_metrics(before_csv: pathlib.Path, after_csv: pathlib.Path) -> Tu
 
 
 def calculate_damage(torque_array: np.ndarray, m: float = 3.0, use_goodman: bool = True, 
-                     sigma_ult: float = 500.0, sigma_y: float = 400.0) -> Dict[str, float]:
+                     joint_torque_limits: Optional[np.ndarray] = None) -> Dict[str, float]:
     """
     Rainflow 알고리즘을 통한 피로 손상 계산 (Goodman 보정 적용)
     
     Args:
         torque_array: shape (T, n_joints) - 시계열 토크 데이터
-        m: Basquin 지수 (일반적으로 3~5, 기본값 3)
+        m: Basquin 지수 (일반적으로 3~10, 기본값 3)
         use_goodman: Goodman 보정 적용 여부 (기본값: True)
-        sigma_ult: 인장 강도 (기본값: 500 MPa)
-        sigma_y: 항복 강도 (기본값: 400 MPa)
+        joint_torque_limits: 조인트별 토크 한계값 (Nm) 배열. None이면 JOINT_TORQUE_LIMITS 사용
     
     Returns:
         각 조인트별 손상 및 총 손상:
@@ -566,6 +583,10 @@ def calculate_damage(torque_array: np.ndarray, m: float = 3.0, use_goodman: bool
         logger.warning("빈 토크 배열입니다. 손상 계산을 건너뜁니다.")
         return None
     
+    # 조인트별 토크 한계값 설정
+    if joint_torque_limits is None:
+        joint_torque_limits = JOINT_TORQUE_LIMITS
+    
     x = np.asarray(torque_array, dtype=float)
     if x.ndim == 1:
         x = x[:, None]
@@ -574,9 +595,15 @@ def calculate_damage(torque_array: np.ndarray, m: float = 3.0, use_goodman: bool
     for j in range(x.shape[1]):
         torque_data = x[:, j]
         
-        # 평균 제거 (0 중심)
-        mean_val = np.mean(torque_data)
-        torque_centered = torque_data - mean_val
+        # 조인트별 토크 한계값 가져오기
+        if j < len(joint_torque_limits):
+            tau_ult = joint_torque_limits[j]  # 해당 조인트의 최대 토크 (Nm)
+        else:
+            tau_ult = 80.0  # 기본값
+            logger.warning(f"Joint {j}의 토크 한계값이 정의되지 않음. 기본값 {tau_ult} Nm 사용.")
+        
+        # 평균 제거 (0 중심) - Rainflow를 위해
+        torque_centered = torque_data - np.mean(torque_data)
         
         try:
             # Rainflow로 사이클 추출
@@ -592,25 +619,25 @@ def calculate_damage(torque_array: np.ndarray, m: float = 3.0, use_goodman: bool
             total_half_cycles = 0
             
             for range_val, cycle_mean_stress, count, i_start, i_end in cycles_list:
-                amp = range_val / 2.0  # 응력 진폭
+                amp = range_val / 2.0  # 토크 진폭 (Nm)
                 max_amp = max(max_amp, amp)
                 
-                # Goodman 보정 (평균 응력의 영향을 고려)
-                # Goodman 선도: σ_f = σ_a × σ_ult / (σ_ult - σ_m)
-                # σ_a: 응력 진폭, σ_m: 평균 응력
+                # ✅ Goodman 보정 (각 사이클의 평균 토크를 사용)
+                # Goodman 다이어그램: τ_a_eff = τ_a × τ_ult / (τ_ult - |τ_m|)
+                # τ_a: 토크 진폭, τ_m: 사이클 평균 토크, τ_ult: 최대 허용 토크
                 if use_goodman:
-                    # 전체 신호의 평균 응력 사용 (mean_val = np.mean(torque_data))
-                    sigma_m = abs(mean_val)  # 평균 응력
+                    # ✅ 각 사이클의 평균 토크 사용 (Rainflow가 제공)
+                    tau_m = abs(cycle_mean_stress)  # 해당 사이클의 평균 토크 (Nm)
                     
-                    # σ_ult - σ_m > 0 인지 확인 (분모가 0이 되지 않도록)
-                    denominator = sigma_ult - sigma_m
+                    # τ_ult - τ_m > 0 인지 확인 (분모가 0이 되지 않도록)
+                    denominator = tau_ult - tau_m
                     if denominator > 1e-6:
-                        # Goodman 계수: σ_f / σ_a = σ_ult / (σ_ult - σ_m)
-                        goodman_factor = sigma_ult / denominator
+                        # Goodman 계수: τ_ult / (τ_ult - τ_m)
+                        goodman_factor = tau_ult / denominator
                         effective_amp = amp * goodman_factor
                     else:
-                        # σ_m >= σ_ult인 경우 (매우 높은 평균 응력) - 보수적으로 처리
-                        logger.warning(f"Joint {j}: 평균 응력({sigma_m:.4f})이 인장 강도({sigma_ult:.4f})를 초과합니다. Goodman 보정 스킵.")
+                        # τ_m >= τ_ult인 경우 (매우 높은 평균 토크) - 보수적으로 처리
+                        logger.warning(f"Joint {j}: 사이클 평균 토크({tau_m:.4f} Nm)가 한계값({tau_ult:.4f} Nm)을 초과합니다. 보수적 페널티 적용.")
                         effective_amp = amp * 100  # 극도로 보수적인 페널티
                 else:
                     effective_amp = amp
@@ -628,7 +655,8 @@ def calculate_damage(torque_array: np.ndarray, m: float = 3.0, use_goodman: bool
                 total_half_cycles += 1
             
             damages.append(Dj)
-            logger.info(f"Joint {j}: 사이클={num_cycles}, 총카운트={total_count:.1f}, 최대진폭={max_amp:.4f}, Goodman={use_goodman}, 손상={Dj:.6e}")
+            logger.info(f"Joint {j}: 사이클={num_cycles}, 총카운트={total_count:.1f}, 최대진폭={max_amp:.4f} Nm, "
+                       f"토크한계={tau_ult:.1f} Nm, Goodman={use_goodman}, 손상={Dj:.6e}")
         
         except Exception as e:
             logger.warning(f"Joint {j}의 손상 계산 실패: {e}")
@@ -666,7 +694,7 @@ def find_matching_files(before_dir: pathlib.Path, after_dir: pathlib.Path) -> li
 
 
 def compare_conditions(before_file: pathlib.Path, after_file: pathlib.Path, 
-                       m: float = 3.0) -> Optional[Dict[str, float]]:
+                       m: float = 3.0, joint_torque_limits: Optional[np.ndarray] = None) -> Optional[Dict[str, float]]:
     """
     두 토크 파일 비교 및 상대 수명비 계산
     
@@ -674,6 +702,7 @@ def compare_conditions(before_file: pathlib.Path, after_file: pathlib.Path,
         before_file: Before torque_current_*.npy 파일 경로
         after_file: After torque_current_*.npy 파일 경로
         m: Basquin 지수
+        joint_torque_limits: 조인트별 토크 한계값 (Nm) 배열. None이면 JOINT_TORQUE_LIMITS 사용
     
     Returns:
         Before/After 손상 및 수명비:
@@ -689,9 +718,9 @@ def compare_conditions(before_file: pathlib.Path, after_file: pathlib.Path,
         before_torque = np.load(before_file)
         after_torque = np.load(after_file)
         
-        # 손상 계산
-        damage_before = calculate_damage(before_torque, m=m)
-        damage_after = calculate_damage(after_torque, m=m)
+        # 손상 계산 (조인트별 토크 한계값 전달)
+        damage_before = calculate_damage(before_torque, m=m, joint_torque_limits=joint_torque_limits)
+        damage_after = calculate_damage(after_torque, m=m, joint_torque_limits=joint_torque_limits)
         
         if damage_before is None or damage_after is None:
             return None
@@ -793,9 +822,16 @@ def save_comparison_to_csv(results: list, output_file: pathlib.Path) -> None:
         logger.error(f"CSV 저장 실패: {e}")
 
 
-def compare_npy_metrics(before_dir: pathlib.Path, after_dir: pathlib.Path, m: float = 3.0) -> Tuple[str, list]:
+def compare_npy_metrics(before_dir: pathlib.Path, after_dir: pathlib.Path, m: float = 3.0, 
+                        joint_torque_limits: Optional[np.ndarray] = None) -> Tuple[str, list]:
     """
     NPY 파일 기반 손상 및 수명비 비교
+    
+    Args:
+        before_dir: Before 디렉토리 경로
+        after_dir: After 디렉토리 경로
+        m: Basquin 지수
+        joint_torque_limits: 조인트별 토크 한계값 (Nm) 배열. None이면 JOINT_TORQUE_LIMITS 사용
     
     Returns:
         Tuple[출력 텍스트, 비교 결과 리스트]
@@ -804,6 +840,10 @@ def compare_npy_metrics(before_dir: pathlib.Path, after_dir: pathlib.Path, m: fl
     logger.info(f"   Before dir: {before_dir}")
     logger.info(f"   After dir:  {after_dir}")
     logger.info(f"   Basquin exponent (m): {m}")
+    
+    if joint_torque_limits is None:
+        joint_torque_limits = JOINT_TORQUE_LIMITS
+    logger.info(f"   Joint torque limits (Nm): {joint_torque_limits}")
     
     # 매칭되는 파일 찾기
     matches = find_matching_files(before_dir, after_dir)
@@ -820,7 +860,7 @@ def compare_npy_metrics(before_dir: pathlib.Path, after_dir: pathlib.Path, m: fl
     for before_file, after_file, filename in matches:
         logger.info(f"📈 처리 중: {filename}")
         
-        comparison = compare_conditions(before_file, after_file, m=m)
+        comparison = compare_conditions(before_file, after_file, m=m, joint_torque_limits=joint_torque_limits)
         if comparison is not None:
             comparison["file"] = filename
             results.append(comparison)
@@ -1005,7 +1045,8 @@ if __name__ == "__main__":
     # 1️⃣ NPY 기반 비교 (기존 기능)
     logger.info(f"\n{'='*120}")
     logger.info("Step 1/2: NPY 기반 비교 시작...")
-    npy_output, npy_results = compare_npy_metrics(before_dir, after_dir, m=args.m)
+    npy_output, npy_results = compare_npy_metrics(before_dir, after_dir, m=args.m, 
+                                                   joint_torque_limits=JOINT_TORQUE_LIMITS)
     all_output.append(npy_output)
     logger.info("✅ NPY 비교 완료")
     

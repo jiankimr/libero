@@ -39,7 +39,10 @@ class Args:
     #################################################################################################################
     # Model server parameters
     #################################################################################################################
-    host: str = "node7"
+    # GR00T inference 서버가 돌고 있는 호스트 이름.
+    # SLURM 클러스터에서는 "node7" 등을 썼지만, 현재 단일 머신 환경에서는
+    # inference_service.py를 같은 머신에서 실행하므로 기본값을 "localhost"로 사용한다.
+    host: str = "localhost"
     port: int = 5555
     resize_size: int = 224
     replan_steps: int = 16
@@ -75,6 +78,12 @@ class Args:
     # Save physical quantities
     #################################################################################################################
     save_metrics: bool = True  # Save all physical metrics (torque, velocity, acceleration, jerk, energy, life_ratio)
+    
+    #################################################################################################################
+    # Rollout data collection (for creating training datasets)
+    #################################################################################################################
+    save_rollout_data: bool = False  # Save rollout observations and actions to pickle
+    rollout_output: str = "rollouts.pkl"  # Output pickle file path
 
 
 def unchunk(action_chunk, action_plan, replan_steps, debug=False):
@@ -245,6 +254,9 @@ def add_alternating_noise(
 
 
 def eval_libero(args: Args) -> None:
+    # Initialize rollout data collection if enabled
+    all_rollout_data = {} if args.save_rollout_data else None
+    
     # Set random seed
     np.random.seed(args.seed)
 
@@ -349,6 +361,11 @@ def eval_libero(args: Args) -> None:
                 torque_avg_list = []  # For energy calculation (average of prev and current)
                 torque_current_list = []  # For life ratio calculation (current step only)
 
+            # Initialize rollout data collection for this episode
+            episode_observations = [] if args.save_rollout_data else None
+            episode_actions = [] if args.save_rollout_data else None
+            episode_rewards = [] if args.save_rollout_data else None
+            
             logging.info(f"Starting episode {task_episodes+1}...")
             while t < max_steps + args.num_steps_wait:
                 try:
@@ -374,11 +391,28 @@ def eval_libero(args: Args) -> None:
                         axis_angle = _quat2axisangle(obs["robot0_eef_quat"])  # Shape (3,) - euler angles (roll, pitch, yaw)
                         gripper_qpos = obs["robot0_gripper_qpos"]  # Shape (2,) - both fingers
 
+                        # Save observation for rollout dataset
+                        if args.save_rollout_data:
+                            obs_dict = {
+                                'observation.images.image': img.copy(),  # (256, 256, 3)
+                                'observation.images.image2': wrist_img.copy(),  # (256, 256, 3)
+                                'observation.state': np.concatenate([
+                                    eef_pos,      # (3,)
+                                    axis_angle,   # (3,)
+                                    gripper_qpos  # (2,)
+                                ])  # Total: (8,)
+                            }
+                            episode_observations.append(obs_dict)
+                        
                         # Log input state for debugging
                         if args.debug_action:
                             logging.info(f"EEF pos: {eef_pos}, axis_angle: {axis_angle}, gripper: {gripper_qpos}")
 
                         # For debugging, we can also expand to individual states
+                        # Convert gripper_qpos (2,) to individual finger states
+                        gripper_left = gripper_qpos[0:1]  # First finger
+                        gripper_right = gripper_qpos[1:2]  # Second finger
+                        
                         element = {
                             # Video keys matching model metadata
                             "video.front_view": np.expand_dims(img, axis=0),  # Batch of 1: (1, H, W, C)
@@ -386,7 +420,8 @@ def eval_libero(args: Args) -> None:
                             # State keys matching model metadata (shape from metadata.json)
                             "state.eef_pos_absolute": eef_pos[np.newaxis, :],  # (1, 3) - absolute position
                             "state.eef_rot_absolute": axis_angle[np.newaxis, :],  # (1, 3) - euler angles (roll, pitch, yaw)
-                            "state.gripper_close": gripper_qpos[np.newaxis, :],  # (1, 2) - both gripper fingers
+                            "state.gripper_left_finger": gripper_left[np.newaxis, :],  # (1, 1) - left finger
+                            "state.gripper_right_finger": gripper_right[np.newaxis, :],  # (1, 1) - right finger
                             "annotation.human.action.task_description": [str(task_description)],
                         }
                         
@@ -448,6 +483,11 @@ def eval_libero(args: Args) -> None:
                         logging.info(f"Libero action: {libero_action}")
                     obs, reward, done, info = env.step(libero_action.tolist())
                     
+                    # Save action for rollout dataset
+                    if args.save_rollout_data:
+                        episode_actions.append(libero_action.copy())
+                        episode_rewards.append(float(reward))
+                    
                     # Collect basic metrics (only if save_metrics is enabled)
                     if args.save_metrics:
                         # Torque - two versions:
@@ -502,13 +542,27 @@ def eval_libero(args: Args) -> None:
             total_episodes += 1
 
             # Save a replay video of the episode
-            suffix = "success" if done else "failure"
-            task_segment = task_description.replace(" ", "_")
-            imageio.mimwrite(
-                pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_{suffix}.mp4",
-                [np.asarray(x) for x in replay_images],
-                fps=10,
-            )
+            # Video saving disabled for performance
+            # suffix = "success" if done else "failure"
+            # task_segment = task_description.replace(" ", "_")
+            # imageio.mimwrite(
+            #     pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_{suffix}.mp4",
+            #     [np.asarray(x) for x in replay_images],
+            #     fps=10,
+            # )
+            
+            # Save episode rollout data
+            if args.save_rollout_data and episode_actions and len(episode_actions) > 0:
+                episode_key = f"episode_{total_episodes}_{task_segment}"
+                all_rollout_data[episode_key] = {
+                    'observations': episode_observations,
+                    'actions': episode_actions,
+                    'rewards': episode_rewards,
+                    'dones': [False] * (len(episode_actions) - 1) + [done],
+                    'task_description': task_description,
+                    'success': done
+                }
+                logging.info(f"Saved rollout data for {episode_key}: {len(episode_actions)} steps, success={done}")
             
             # Compute and save physical metrics if enabled
             if args.save_metrics:
@@ -602,6 +656,27 @@ def eval_libero(args: Args) -> None:
             task_suite_name=args.task_suite_name,
             base_name=base_name
         )
+    
+    # Save all rollout data to pickle
+    if args.save_rollout_data and all_rollout_data:
+        import pickle
+        output_path = pathlib.Path(args.rollout_output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        with open(output_path, 'wb') as f:
+            pickle.dump(all_rollout_data, f)
+        
+        logging.info(f"")
+        logging.info(f"=" * 60)
+        logging.info(f"✅ Saved {len(all_rollout_data)} episodes to {output_path}")
+        logging.info(f"Total frames: {sum(len(ep['actions']) for ep in all_rollout_data.values())}")
+        logging.info(f"=" * 60)
+        logging.info(f"")
+        logging.info(f"Next step: Convert to LeRobot format")
+        logging.info(f"python /workspace/scripts/collect_rollouts_to_lerobot.py \\")
+        logging.info(f"    --input {output_path} \\")
+        logging.info(f"    --output /workspace/data/my_rollouts")
+        logging.info(f"")
     
     # save result to csv
     with open(args.result_file_name, "w", newline="") as f:
