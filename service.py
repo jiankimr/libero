@@ -13,25 +13,59 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import io
 from dataclasses import dataclass
-from io import BytesIO
 from typing import Any, Callable, Dict
 
-import torch
+import msgpack
+import numpy as np
 import zmq
 
 
-class TorchSerializer:
+class MsgSerializer:
     @staticmethod
     def to_bytes(data: dict) -> bytes:
-        buffer = BytesIO()
-        torch.save(data, buffer)
-        return buffer.getvalue()
+        try:
+            # Debug: Check what keys are being serialized BEFORE packb
+            if "data" in data:
+                data_keys = list(data["data"].keys())
+                has_wrist_before = "video.wrist_image" in data_keys
+            else:
+                has_wrist_before = None
+            
+            result = msgpack.packb(data, default=MsgSerializer.encode_custom_classes)
+            
+            # Debug: Verify what was actually serialized AFTER packb
+            if "data" in data:
+                test = msgpack.unpackb(result, object_hook=MsgSerializer.decode_custom_classes)
+                test_keys = list(test.get("data", {}).keys())
+                has_wrist_after = "video.wrist_image" in test_keys
+                
+                if has_wrist_before and not has_wrist_after:
+                    print(f"[SERIALIZATION BUG] wrist_image LOST! Before: {data_keys}, After: {test_keys}", flush=True)
+                    print(f"  result size: {len(result)}", flush=True)
+            
+            return result
+        except Exception as e:
+            print(f"ERROR in serialization: {e}", flush=True)
+            raise
 
     @staticmethod
     def from_bytes(data: bytes) -> dict:
-        buffer = BytesIO(data)
-        obj = torch.load(buffer)
+        return msgpack.unpackb(data, object_hook=MsgSerializer.decode_custom_classes)
+
+    @staticmethod
+    def decode_custom_classes(obj):
+        if "__ndarray_class__" in obj:
+            obj = np.load(io.BytesIO(obj["as_npy"]), allow_pickle=False)
+        return obj
+
+    @staticmethod
+    def encode_custom_classes(obj):
+        if isinstance(obj, np.ndarray):
+            output = io.BytesIO()
+            np.save(output, obj, allow_pickle=False)
+            return {"__ndarray_class__": True, "as_npy": output.getvalue()}
         return obj
 
 
@@ -87,7 +121,7 @@ class BaseInferenceServer:
         while self.running:
             try:
                 message = self.socket.recv()
-                request = TorchSerializer.from_bytes(message)
+                request = MsgSerializer.from_bytes(message)
                 endpoint = request.get("endpoint", "get_action")
 
                 if endpoint not in self._endpoints:
@@ -99,13 +133,13 @@ class BaseInferenceServer:
                     if handler.requires_input
                     else handler.handler()
                 )
-                self.socket.send(TorchSerializer.to_bytes(result))
+                self.socket.send(MsgSerializer.to_bytes(result))
             except Exception as e:
                 print(f"Error in server: {e}")
                 import traceback
 
                 print(traceback.format_exc())
-                self.socket.send(b"ERROR")
+                self.socket.send(MsgSerializer.to_bytes({"error": str(e)}))
 
 
 class BaseInferenceClient:
@@ -150,11 +184,13 @@ class BaseInferenceClient:
         if requires_input:
             request["data"] = data
 
-        self.socket.send(TorchSerializer.to_bytes(request))
+        self.socket.send(MsgSerializer.to_bytes(request))
         message = self.socket.recv()
-        if message == b"ERROR":
-            raise RuntimeError("Server error")
-        return TorchSerializer.from_bytes(message)
+        response = MsgSerializer.from_bytes(message)
+        
+        if "error" in response:
+            raise RuntimeError(f"Server error: {response['error']}")
+        return response
 
     def __del__(self):
         """Cleanup resources on destruction"""

@@ -3,6 +3,7 @@ import dataclasses
 import logging
 import math
 import pathlib
+import sys
 from typing import Optional
 import datetime
 
@@ -350,6 +351,9 @@ def eval_libero(args: Args) -> None:
                 torque_current_list = []  # For life ratio calculation (current step only)
 
             logging.info(f"Starting episode {task_episodes+1}...")
+            # Debug: Check available image keys in initial observation
+            image_keys = [k for k in obs.keys() if 'image' in k.lower()]
+            print(f"[Episode {task_episodes+1}] Available image keys: {image_keys}", flush=True)
             while t < max_steps + args.num_steps_wait:
                 try:
                     # IMPORTANT: Do nothing for the first few timesteps because the simulator drops objects
@@ -362,7 +366,14 @@ def eval_libero(args: Args) -> None:
                     # Get preprocessed image
                     # IMPORTANT: rotate 180 degrees to match train preprocessing
                     img = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
-                    wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
+                    
+                    # Check if wrist camera is available
+                    if "robot0_eye_in_hand_image" not in obs:
+                        print(f"WARNING: robot0_eye_in_hand_image not in obs! Available keys: {[k for k in obs.keys() if 'image' in k.lower()]}", flush=True)
+                        # Use agentview as fallback (not ideal but prevents crash)
+                        wrist_img = img.copy()
+                    else:
+                        wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
 
                     # Save preprocessed image for replay video
                     replay_images.append(img)
@@ -375,18 +386,25 @@ def eval_libero(args: Args) -> None:
                         gripper_qpos = obs["robot0_gripper_qpos"]  # Shape (2,) - both fingers
 
                         # Log input state for debugging
+                        if t == args.num_steps_wait:  # First action of episode
+                            print(f"[STATE] eef_pos={eef_pos}, axis_angle={axis_angle}, gripper={gripper_qpos}", flush=True)
                         if args.debug_action:
                             logging.info(f"EEF pos: {eef_pos}, axis_angle: {axis_angle}, gripper: {gripper_qpos}")
 
                         # For debugging, we can also expand to individual states
                         element = {
-                            # Video keys matching model metadata
-                            "video.front_view": np.expand_dims(img, axis=0),  # Batch of 1: (1, H, W, C)
-                            "video.left_wrist_view": np.expand_dims(wrist_img, axis=0),  # Batch of 1: (1, H, W, C)
+                            # Video keys matching model metadata (use video.image as expected by the model)
+                            "video.image": np.expand_dims(img, axis=0),  # Batch of 1: (1, H, W, C)
+                            "video.wrist_image": np.expand_dims(wrist_img, axis=0),  # Batch of 1: (1, H, W, C)
                             # State keys matching model metadata (shape from metadata.json)
-                            "state.eef_pos_absolute": eef_pos[np.newaxis, :],  # (1, 3) - absolute position
-                            "state.eef_rot_absolute": axis_angle[np.newaxis, :],  # (1, 3) - euler angles (roll, pitch, yaw)
-                            "state.gripper_close": gripper_qpos[np.newaxis, :],  # (1, 2) - both gripper fingers
+                            "state.x": eef_pos[np.newaxis, 0:1],  # (1, 1) - x position
+                            "state.y": eef_pos[np.newaxis, 1:2],  # (1, 1) - y position
+                            "state.z": eef_pos[np.newaxis, 2:3],  # (1, 1) - z position
+                            "state.axis_angle1": axis_angle[np.newaxis, 0:1],  # (1, 1) - roll
+                            "state.axis_angle2": axis_angle[np.newaxis, 1:2],  # (1, 1) - pitch
+                            "state.axis_angle3": axis_angle[np.newaxis, 2:3],  # (1, 1) - yaw
+                            "state.gripper_left_finger": gripper_qpos[np.newaxis, 0:1],  # (1, 1) - left finger
+                            "state.gripper_right_finger": gripper_qpos[np.newaxis, 1:2],  # (1, 1) - right finger
                             "annotation.human.action.task_description": [str(task_description)],
                         }
                         
@@ -400,8 +418,24 @@ def eval_libero(args: Args) -> None:
                         if args.debug_action:
                             logging.info(f"Element keys: {element.keys()}")
 
+                        # DEBUG: Verify wrist_image is in element right before sending
+                        if "video.wrist_image" not in element:
+                            print(f"[EVAL BUG] wrist_image NOT in element! Keys: {list(element.keys())}", flush=True)
+                            import traceback
+                            traceback.print_stack()
+                        else:
+                            print(f"[EVAL OK] wrist_image present, shape: {element['video.wrist_image'].shape}", flush=True)
+
                         # Query model to get action
                         action_chunk = policy.get_action(element)
+                        
+                        # TEMPORARY: Always log action chunk to debug failures
+                        #t=step
+                        if t == args.num_steps_wait:  # Only log first action per episode to reduce noise
+                            print(f"[ACTION] First action chunk - keys: {list(action_chunk.keys())}", flush=True)
+                            for key, val in action_chunk.items():
+                                if val.ndim >= 1 and len(val) > 0:
+                                    print(f"  {key}: shape={val.shape}, min={val.min():.4f}, max={val.max():.4f}, mean={val.mean():.4f}", flush=True)
                         
                         # Log action chunk for debugging (only if debug_action is enabled)
                         if args.debug_action:
@@ -433,16 +467,30 @@ def eval_libero(args: Args) -> None:
                     eef_rot_delta = action[3:6]     # Next 3 elements: [roll_delta, pitch_delta, yaw_delta]
                     gripper_cmd = action[6]         # Last element: gripper command ([-1, 1] range)
                     
+                    # DEBUG: Log action values to understand failure
+                    logging.info(f"Action values - pos_delta: {eef_pos_delta}, rot_delta: {eef_rot_delta}, gripper: {gripper_cmd}")
+                    logging.info(f"Action ranges - pos: [{eef_pos_delta.min():.4f}, {eef_pos_delta.max():.4f}], rot: [{eef_rot_delta.min():.4f}, {eef_rot_delta.max():.4f}]")
+                    
                     if args.debug_action:
                         logging.info(f"  eef_pos_delta={eef_pos_delta}, eef_rot_delta={eef_rot_delta}, gripper_cmd={gripper_cmd}")
                     
                     # Libero expects: [dx, dy, dz, rot_x, rot_y, rot_z, gripper]
-                    # where gripper: -1 = open, 1 = close (model outputs already in this range)
+                    # where gripper: +1 = open, -1 = close
+                    # Model outputs gripper in range [0, 1] where 0 = open, 1 = close
+                    # Convert: gripper_libero = 1 - 2 * gripper_model
+                    gripper_libero = 1.0 - 2.0 * gripper_cmd
+                    
                     libero_action = np.concatenate([
                         eef_pos_delta,
                         eef_rot_delta,
-                        [gripper_cmd]
+                        [gripper_libero]
                     ])
+                    
+                    # DEBUG: Print first few actions of each episode
+                    if t < args.num_steps_wait + 3:
+                        print(f"[DEBUG t={t}] pos=[{libero_action[0]:.3f},{libero_action[1]:.3f},{libero_action[2]:.3f}] rot=[{libero_action[3]:.3f},{libero_action[4]:.3f},{libero_action[5]:.3f}] grip={libero_action[6]:.3f}", flush=True)
+                    
+                    logging.info(f"Libero action (before env.step): {libero_action}")
                     
                     if args.debug_action:
                         logging.info(f"Libero action: {libero_action}")
@@ -572,14 +620,24 @@ def eval_libero(args: Args) -> None:
                 except Exception as e:
                     logging.error(f"Failed to compute metrics: {e}")
 
-            # Log current results
+            # Log current results (both logging and print for visibility)
+            success_str = "✓ SUCCESS" if done else "✗ FAILURE"
+            print(f"\n[Episode Result] {success_str}", flush=True)
+            print(f"[Progress] Episodes: {total_episodes}, Successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)", flush=True)
             logging.info(f"Success: {done}")
             logging.info(f"# episodes completed so far: {total_episodes}")
             logging.info(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
         
         env.close() # Explicitly close the environment after all episodes for this task are done.
 
-        # Log final results
+        # Log final results (both logging and print for visibility)
+        task_success_rate = float(task_successes) / float(task_episodes) * 100
+        total_success_rate = float(total_successes) / float(total_episodes) * 100
+        print(f"\n{'='*60}", flush=True)
+        print(f"[Task Complete] {task_description}", flush=True)
+        print(f"[Task Success Rate] {task_successes}/{task_episodes} = {task_success_rate:.1f}%", flush=True)
+        print(f"[Total Success Rate] {total_successes}/{total_episodes} = {total_success_rate:.1f}%", flush=True)
+        print(f"{'='*60}\n", flush=True)
         logging.info(f"Current task success rate: {float(task_successes) / float(task_episodes)}")
         logging.info(f"Current total success rate: {float(total_successes) / float(total_episodes)}")
 
@@ -589,6 +647,15 @@ def eval_libero(args: Args) -> None:
             "num_episodes": task_episodes
         }
 
+    # Final summary (both logging and print for visibility)
+    final_success_rate = float(total_successes) / float(total_episodes) * 100
+    print(f"\n{'#'*60}", flush=True)
+    print(f"#  EVALUATION COMPLETE", flush=True)
+    print(f"#  Video output: {args.video_out_path}", flush=True)
+    print(f"#  Total Episodes: {total_episodes}", flush=True)
+    print(f"#  Total Successes: {total_successes}", flush=True)
+    print(f"#  FINAL SUCCESS RATE: {final_success_rate:.1f}%", flush=True)
+    print(f"{'#'*60}\n", flush=True)
     logging.info(f"{args.video_out_path}")
     logging.info(f"Total success rate: {float(total_successes) / float(total_episodes)}")
     logging.info(f"Total episodes: {total_episodes}")
@@ -615,7 +682,12 @@ def _get_libero_env(task, resolution, seed):
     """Initializes and returns the LIBERO environment, along with the task description."""
     task_description = task.language
     task_bddl_file = pathlib.Path(get_libero_path("bddl_files")) / task.problem_folder / task.bddl_file
-    env_args = {"bddl_file_name": task_bddl_file, "camera_heights": resolution, "camera_widths": resolution}
+    env_args = {
+        "bddl_file_name": task_bddl_file,
+        "camera_heights": resolution,
+        "camera_widths": resolution,
+        "camera_names": ["agentview", "robot0_eye_in_hand"],  # Include wrist camera
+    }
     env = OffScreenRenderEnv(**env_args)
     env.seed(seed)  # IMPORTANT: seed seems to affect object positions even when using fixed initial state
     return env, task_description
@@ -640,5 +712,16 @@ def _quat2axisangle(quat):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    # Configure logging with timestamp and flush
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%H:%M:%S',
+        handlers=[
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+    # Force immediate output
+    for handler in logging.root.handlers:
+        handler.flush()
     tyro.cli(eval_libero)
