@@ -4,9 +4,12 @@ import logging
 import math
 import pathlib
 import sys
-from typing import Optional
+from typing import Optional, List, Dict, Any
 import datetime
+import json
+import os
 
+import h5py
 import imageio
 import tqdm
 import tyro
@@ -14,6 +17,7 @@ import csv
 import numpy as np
 
 from PIL import Image
+#import robosuite.utils.transform_utils as T
 
 from service import ExternalRobotInferenceClient
 
@@ -43,7 +47,7 @@ class Args:
     host: str = "node7"
     port: int = 5555
     resize_size: int = 224
-    replan_steps: int = 16
+    replan_steps: int = 16 #total 16, base 4~5
     #################################################################################################################
     # Action noise parameters
     #################################################################################################################
@@ -76,6 +80,12 @@ class Args:
     # Save physical quantities
     #################################################################################################################
     save_metrics: bool = True  # Save all physical metrics (torque, velocity, acceleration, jerk, energy, life_ratio)
+    output_suffix: Optional[str] = None  # Suffix to append to output file names (e.g., "clean", "noisy")
+    #################################################################################################################
+    # Rollout data collection (for creating training datasets)
+    #################################################################################################################
+    save_rollouts: bool = True  # Save rollout data as HDF5 for training dataset creation
+    rollout_save_path: Optional[str] = None  # Directory to save rollout HDF5 files (default: ./rollouts/)
 
 
 def unchunk(action_chunk, action_plan, replan_steps, debug=False):
@@ -216,7 +226,16 @@ def add_alternating_noise(
                 clipped_values = np.clip(modified_values, -1.0, 1.0)
         else:
             # Apply noise to entire array
-            modified_values[:num_steps_to_noise] = modified_values[:num_steps_to_noise] + noise
+            # Handle different array shapes: (T,), (T, 1), (T, D)
+            if modified_values.ndim == 1:
+                # Shape (T,) - add noise directly
+                modified_values[:num_steps_to_noise] = modified_values[:num_steps_to_noise] + noise
+            elif modified_values.shape[1] == 1:
+                # Shape (T, 1) - reshape noise to (T, 1)
+                modified_values[:num_steps_to_noise] = modified_values[:num_steps_to_noise] + noise[:, np.newaxis]
+            else:
+                # Shape (T, D) - broadcast noise across all dimensions
+                modified_values[:num_steps_to_noise] = modified_values[:num_steps_to_noise] + noise[:, np.newaxis]
             
             if debug:
                 logging.info(f"Values after adding noise: {modified_values[:num_steps_to_noise]}")
@@ -254,7 +273,8 @@ def eval_libero(args: Args) -> None:
         date_time_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         noise_str = f"noise_{args.action_noise_scale:.4f}".replace('.', '')
         dim_str = f"_dim_{args.action_noise_dim}" if args.action_noise_dim else ""
-        base_name = f"{date_time_str}_{noise_str}{dim_str}"
+        suffix_str = f"_{args.output_suffix}" if args.output_suffix else ""
+        base_name = f"{date_time_str}_{noise_str}{dim_str}{suffix_str}"
         
         if args.video_out_path is None:
             args.video_out_path = f"./videos/video_{args.task_suite_name}_{base_name}"
@@ -266,6 +286,13 @@ def eval_libero(args: Args) -> None:
 
     # Create analysis output path
     analysis_out_path = f"./analysis/analysis_{args.task_suite_name}_{base_name}"
+
+    # Setup rollout save path if enabled
+    if args.save_rollouts:
+        if args.rollout_save_path is None:
+            args.rollout_save_path = f"./rollouts/rollout_{args.task_suite_name}_{base_name}"
+        pathlib.Path(args.rollout_save_path).mkdir(parents=True, exist_ok=True)
+        logging.info(f"Rollout data will be saved to: {args.rollout_save_path}")
 
     # Initialize LIBERO task suite
     benchmark_dict = benchmark.get_benchmark_dict()
@@ -310,6 +337,9 @@ def eval_libero(args: Args) -> None:
         # Initialize LIBERO environment and task description
         env, task_description = _get_libero_env(task, LIBERO_ENV_RESOLUTION, args.seed)
 
+        # Initialize rollout episode data list for this task (if enabled)
+        task_rollout_episodes = []
+
         # Start episodes
         task_episodes, task_successes = 0, 0
         for episode_idx in tqdm.tqdm(range(args.num_trials_per_task)):
@@ -325,6 +355,14 @@ def eval_libero(args: Args) -> None:
             # Setup
             t = 0
             replay_images = []
+            
+            # Initialize rollout data collection lists (if enabled)
+            rollout_agentview_images = []
+            rollout_eye_in_hand_images = []
+            rollout_ee_states = []
+            rollout_gripper_states = []
+            rollout_joint_states = []
+            rollout_actions = []
             
             # Infer dt from environment and initialize metrics if needed
             dt = None
@@ -448,10 +486,20 @@ def eval_libero(args: Args) -> None:
                         
                         # Add alternating noise if specified
                         if args.action_noise_scale > 0:
+                            # Log before noise
+                            if args.debug_action and args.action_noise_dim in action_chunk:
+                                before_vals = action_chunk[args.action_noise_dim][:args.replan_steps].flatten()
+                                print(f"[NOISE] Before: {args.action_noise_dim} = {before_vals}", flush=True)
+                            
                             action_chunk = add_alternating_noise(
                                 action_chunk, args.action_noise_scale, args.action_noise_dim, args.replan_steps,
                                 debug=args.debug_action
                             )
+                            
+                            # Log after noise
+                            if args.debug_action and args.action_noise_dim in action_chunk:
+                                after_vals = action_chunk[args.action_noise_dim][:args.replan_steps].flatten()
+                                print(f"[NOISE] After:  {args.action_noise_dim} = {after_vals}", flush=True)
                         
                         unchunk(action_chunk, action_plan, args.replan_steps, debug=args.debug_action)
 
@@ -495,6 +543,37 @@ def eval_libero(args: Args) -> None:
                     if args.debug_action:
                         logging.info(f"Libero action: {libero_action}")
                     obs, reward, done, info = env.step(libero_action.tolist())
+                    
+                    # Collect rollout data (if enabled)
+                    if args.save_rollouts:
+                        # Images (rotate 180 degrees to match train preprocessing)
+                        agentview_img = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
+                        eye_in_hand_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
+                        rollout_agentview_images.append(agentview_img)
+                        rollout_eye_in_hand_images.append(eye_in_hand_img)
+                        
+                        # Proprioceptive states
+                        eef_pos = obs["robot0_eef_pos"]
+                        eef_quat = obs["robot0_eef_quat"]
+                        axis_angle = _quat2axisangle(eef_quat.copy())
+                        ee_state = np.concatenate([eef_pos, axis_angle])
+                        rollout_ee_states.append(ee_state)
+                        
+                        gripper_state = obs["robot0_gripper_qpos"]
+                        rollout_gripper_states.append(gripper_state)
+                        
+                        joint_state = obs["robot0_joint_pos"]
+                        rollout_joint_states.append(joint_state)
+                        
+                        # Action (7D: eef_pos_delta (3) + eef_rot_delta (3) + gripper (1))
+                        # Save in TRAINING format: gripper in [0, 1] range (0=open, 1=close)
+                        # NOT libero format ([-1, 1] where +1=open, -1=close)
+                        rollout_action = np.concatenate([
+                            eef_pos_delta,
+                            eef_rot_delta,
+                            [gripper_cmd]  # Original model output [0, 1], not gripper_libero
+                        ])
+                        rollout_actions.append(rollout_action)
                     
                     # Collect basic metrics (only if save_metrics is enabled)
                     if args.save_metrics:
@@ -620,6 +699,21 @@ def eval_libero(args: Args) -> None:
                 except Exception as e:
                     logging.error(f"Failed to compute metrics: {e}")
 
+            # Collect rollout episode data (if enabled and we have data)
+            if args.save_rollouts and len(rollout_actions) > 0:
+                episode_data = {
+                    "agentview_images": rollout_agentview_images,
+                    "eye_in_hand_images": rollout_eye_in_hand_images,
+                    "ee_states": rollout_ee_states,
+                    "gripper_states": rollout_gripper_states,
+                    "joint_states": rollout_joint_states,
+                    "actions": rollout_actions,
+                    "success": done,
+                    "task_description": task_description,
+                }
+                task_rollout_episodes.append(episode_data)
+                logging.info(f"Collected rollout data: {len(rollout_actions)} steps, success={done}")
+
             # Log current results (both logging and print for visibility)
             success_str = "✓ SUCCESS" if done else "✗ FAILURE"
             print(f"\n[Episode Result] {success_str}", flush=True)
@@ -629,6 +723,22 @@ def eval_libero(args: Args) -> None:
             logging.info(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
         
         env.close() # Explicitly close the environment after all episodes for this task are done.
+        
+        # Save rollout data for this task (if enabled)
+        if args.save_rollouts and len(task_rollout_episodes) > 0:
+            task_segment = task_description.replace(" ", "_")
+            # Include task_id to avoid filename conflicts when running multiple times
+            hdf5_path = os.path.join(args.rollout_save_path, f"rollout_task{task_id:02d}_{task_segment}.hdf5")
+            save_rollout_to_hdf5(
+                hdf5_path=hdf5_path,
+                episode_data_list=task_rollout_episodes,
+                task_suite_name=args.task_suite_name,
+                env_name="LIBERO",
+            )
+            # Count successes and failures
+            num_success = sum(1 for ep in task_rollout_episodes if ep["success"])
+            num_failure = len(task_rollout_episodes) - num_success
+            print(f"[Rollout] Saved {len(task_rollout_episodes)} episodes ({num_success} success, {num_failure} failure) to {hdf5_path}", flush=True)
 
         # Log final results (both logging and print for visibility)
         task_success_rate = float(task_successes) / float(task_episodes) * 100
@@ -678,19 +788,107 @@ def eval_libero(args: Args) -> None:
             writer.writerow([task_description, data["num_episodes"], data["num_success"], data["success_rate"]])
 
 
-def _get_libero_env(task, resolution, seed):
-    """Initializes and returns the LIBERO environment, along with the task description."""
-    task_description = task.language
-    task_bddl_file = pathlib.Path(get_libero_path("bddl_files")) / task.problem_folder / task.bddl_file
-    env_args = {
-        "bddl_file_name": task_bddl_file,
-        "camera_heights": resolution,
-        "camera_widths": resolution,
-        "camera_names": ["agentview", "robot0_eye_in_hand"],  # Include wrist camera
-    }
-    env = OffScreenRenderEnv(**env_args)
-    env.seed(seed)  # IMPORTANT: seed seems to affect object positions even when using fixed initial state
-    return env, task_description
+###############################################################################
+# Rollout Data Collection Functions (for creating training datasets)
+###############################################################################
+
+def save_rollout_to_hdf5(
+    hdf5_path: str,
+    episode_data_list: List[Dict[str, Any]],
+    task_suite_name: str,
+    env_name: str = "LIBERO",
+) -> None:
+    """
+    Save collected rollout data to HDF5 file in LIBERO-compatible format.
+    
+    This follows the format used by LIBERO's create_dataset.py:
+    - data/demo_X/obs/agentview_rgb
+    - data/demo_X/obs/eye_in_hand_rgb
+    - data/demo_X/obs/ee_states (eef_pos + axis_angle)
+    - data/demo_X/obs/gripper_states
+    - data/demo_X/obs/joint_states
+    - data/demo_X/actions
+    - data/demo_X/rewards
+    - data/demo_X/dones
+    
+    Args:
+        hdf5_path: Path to save the HDF5 file
+        episode_data_list: List of episode data dictionaries, each containing:
+            - 'agentview_images': List[np.ndarray] (H, W, 3)
+            - 'eye_in_hand_images': List[np.ndarray] (H, W, 3)
+            - 'ee_states': List[np.ndarray] (6,) - eef_pos (3) + axis_angle (3)
+            - 'gripper_states': List[np.ndarray] (2,)
+            - 'joint_states': List[np.ndarray] (n_joints,)
+            - 'actions': List[np.ndarray] (7,)
+            - 'success': bool
+            - 'task_description': str
+        task_suite_name: Name of the task suite (e.g., "libero_10")
+        env_name: Environment name
+    """
+    pathlib.Path(hdf5_path).parent.mkdir(parents=True, exist_ok=True)
+    
+    with h5py.File(hdf5_path, "w") as f:
+        # Create data group
+        grp = f.create_group("data")
+        
+        # Store metadata
+        now = datetime.datetime.now()
+        grp.attrs["date"] = f"{now.month}-{now.day}-{now.year}"
+        grp.attrs["time"] = f"{now.hour}:{now.minute}:{now.second}"
+        grp.attrs["env_name"] = env_name
+        grp.attrs["task_suite_name"] = task_suite_name
+        grp.attrs["num_demos"] = len(episode_data_list)
+        
+        total_samples = 0
+        
+        for i, episode_data in enumerate(episode_data_list):
+            ep_grp = grp.create_group(f"demo_{i}")
+            
+            # Create obs group
+            obs_grp = ep_grp.create_group("obs")
+            
+            # Save images
+            agentview_images = np.stack(episode_data["agentview_images"], axis=0)
+            eye_in_hand_images = np.stack(episode_data["eye_in_hand_images"], axis=0)
+            obs_grp.create_dataset("agentview_rgb", data=agentview_images, compression="gzip")
+            obs_grp.create_dataset("eye_in_hand_rgb", data=eye_in_hand_images, compression="gzip")
+            
+            # Save proprioceptive states
+            ee_states = np.stack(episode_data["ee_states"], axis=0)
+            obs_grp.create_dataset("ee_states", data=ee_states)
+            obs_grp.create_dataset("ee_pos", data=ee_states[:, :3])
+            obs_grp.create_dataset("ee_ori", data=ee_states[:, 3:])
+            
+            gripper_states = np.stack(episode_data["gripper_states"], axis=0)
+            obs_grp.create_dataset("gripper_states", data=gripper_states)
+            
+            joint_states = np.stack(episode_data["joint_states"], axis=0)
+            obs_grp.create_dataset("joint_states", data=joint_states)
+            
+            # Save actions
+            actions = np.stack(episode_data["actions"], axis=0)
+            ep_grp.create_dataset("actions", data=actions)
+            
+            # Save rewards and dones
+            num_steps = len(episode_data["actions"])
+            rewards = np.zeros(num_steps, dtype=np.uint8)
+            dones = np.zeros(num_steps, dtype=np.uint8)
+            if episode_data["success"]:
+                rewards[-1] = 1
+            dones[-1] = 1
+            ep_grp.create_dataset("rewards", data=rewards)
+            ep_grp.create_dataset("dones", data=dones)
+            
+            # Store episode metadata
+            ep_grp.attrs["num_samples"] = num_steps
+            ep_grp.attrs["task_description"] = episode_data["task_description"]
+            ep_grp.attrs["success"] = episode_data["success"]
+            
+            total_samples += num_steps
+        
+        grp.attrs["total"] = total_samples
+    
+    logging.info(f"Saved {len(episode_data_list)} episodes ({total_samples} samples) to {hdf5_path}")
 
 
 def _quat2axisangle(quat):
@@ -709,6 +907,21 @@ def _quat2axisangle(quat):
         return np.zeros(3)
 
     return (quat[:3] * 2.0 * math.acos(quat[3])) / den
+
+
+def _get_libero_env(task, resolution, seed):
+    """Initializes and returns the LIBERO environment, along with the task description."""
+    task_description = task.language
+    task_bddl_file = pathlib.Path(get_libero_path("bddl_files")) / task.problem_folder / task.bddl_file
+    env_args = {
+        "bddl_file_name": task_bddl_file,
+        "camera_heights": resolution,
+        "camera_widths": resolution,
+        "camera_names": ["agentview", "robot0_eye_in_hand"],  # Include wrist camera
+    }
+    env = OffScreenRenderEnv(**env_args)
+    env.seed(seed)  # IMPORTANT: seed seems to affect object positions even when using fixed initial state
+    return env, task_description
 
 
 if __name__ == "__main__":
