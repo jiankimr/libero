@@ -340,6 +340,9 @@ def eval_libero(args: Args) -> None:
         # Initialize rollout episode data list for this task (if enabled)
         task_rollout_episodes = []
 
+        # Flag for action space analysis (log once per task)
+        action_space_logged_for_task = False
+
         # Start episodes
         task_episodes, task_successes = 0, 0
         for episode_idx in tqdm.tqdm(range(args.num_trials_per_task)):
@@ -542,7 +545,28 @@ def eval_libero(args: Args) -> None:
                     
                     if args.debug_action:
                         logging.info(f"Libero action: {libero_action}")
+                    
+                    # ACTION SPACE ANALYSIS: Measure actual EEF movement vs commanded pos_delta
+                    p0 = obs["robot0_eef_pos"].copy()  # Position before step
                     obs, reward, done, info = env.step(libero_action.tolist())
+                    p1 = obs["robot0_eef_pos"].copy()  # Position after step
+                    
+                    dp_mm = (p1 - p0) * 1000.0  # Convert to mm
+                    
+                    # Log action space analysis ONCE per task (first valid step of first episode)
+                    if not action_space_logged_for_task and t == args.num_steps_wait:
+                        action_space_logged_for_task = True
+                        print(f"\n{'='*70}", flush=True)
+                        print(f"[ACTION SPACE ANALYSIS] Task: {task_description}", flush=True)
+                        print(f"[SIM] cmd pos_delta (action unit): {np.round(eef_pos_delta, 4)}", flush=True)
+                        print(f"[SIM] actual EEF moved (mm):       {np.round(dp_mm, 3)}", flush=True)
+                        # Calculate scale factor (action unit -> mm)
+                        pos_delta_norm = np.linalg.norm(eef_pos_delta)
+                        dp_mm_norm = np.linalg.norm(dp_mm)
+                        if pos_delta_norm > 1e-6:
+                            scale_factor = dp_mm_norm / pos_delta_norm
+                            print(f"[SIM] scale factor (mm per action unit): {scale_factor:.3f}", flush=True)
+                        print(f"{'='*70}\n", flush=True)
                     
                     # Collect rollout data (if enabled)
                     if args.save_rollouts:

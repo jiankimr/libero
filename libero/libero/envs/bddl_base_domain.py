@@ -3,6 +3,13 @@ import os
 import robosuite.utils.transform_utils as T
 
 from copy import deepcopy
+
+# Import dense reward module for reward_shaping support
+try:
+    from libero.libero.envs.rewards import compute_dense_reward
+    DENSE_REWARD_AVAILABLE = True
+except ImportError:
+    DENSE_REWARD_AVAILABLE = False
 from robosuite.environments.manipulation.single_arm_env import SingleArmEnv
 from robosuite.models.tasks import ManipulationTask
 from robosuite.utils.placement_samplers import SequentialCompositeSampler
@@ -166,19 +173,31 @@ class BDDLBaseDomain(SingleArmEnv):
         """
         Reward function for the task.
 
-        Sparse un-normalized reward:
-
+        Sparse un-normalized reward (default):
             - a discrete reward of 1.0 is provided if the task succeeds.
 
+        Dense reward (when reward_shaping=True):
+            - Reaching reward: based on gripper-to-object distance
+            - Grasping reward: bonus when object is grasped
+            - Success reward: on task completion
+
         Args:
-            action (np.array): [NOT USED]
+            action (np.array): The action taken (used for dense reward)
 
         Returns:
             float: reward value
         """
+        # Use dense reward if reward_shaping is enabled
+        if self.reward_shaping and DENSE_REWARD_AVAILABLE:
+            return compute_dense_reward(
+                env=self,
+                action=action,
+                reward_scale=self.reward_scale if self.reward_scale else 1.0,
+            )
+        
+        # Default: sparse completion reward
         reward = 0.0
 
-        # sparse completion reward
         if self._check_success():
             reward = 1.0
 
