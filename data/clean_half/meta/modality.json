@@ -1,0 +1,86 @@
+{
+    "state": {
+        "x": {
+            "start": 0,
+            "end": 1
+        },
+        "y": {
+            "start": 1,
+            "end": 2
+        },
+        "z": {
+            "start": 2,
+            "end": 3
+        },
+        "axis_angle1": {
+            "start": 3,
+            "end": 4,
+            "rotation_type": "axis_angle"
+        },
+        "axis_angle2": {
+            "start": 4,
+            "end": 5,
+            "rotation_type": "axis_angle"
+        },
+        "axis_angle3": {
+            "start": 5,
+            "end": 6,
+            "rotation_type": "axis_angle"
+        },
+        "gripper_left_finger": {
+            "start": 6,
+            "end": 7
+        },
+        "gripper_right_finger": {
+            "start": 7,
+            "end": 8 
+        }
+    }, 
+    "action": { 
+        "x": {
+            "start": 0, 
+            "end": 1
+        },
+        "y": {
+            "start": 1,
+            "end": 2
+        },
+        "z": {
+            "start": 2,
+            "end": 3
+        },
+        "axis_angle1": {
+            "start": 3,
+            "end": 4,
+            "rotation_type": "axis_angle"
+        },
+        "axis_angle2": {
+            "start": 4,
+            "end": 5,
+            "rotation_type": "axis_angle"
+        },
+        "axis_angle3": {
+            "start": 5,
+            "end": 6,
+            "rotation_type": "axis_angle"
+        },
+        "gripper": {
+            "start": 6,
+            "end": 7 
+        }
+    },
+    "video": {
+        "image": {
+            "original_key": "observation.images.image"
+        },
+        "wrist_image": {
+            "original_key": "observation.images.wrist_image"
+        }
+    },
+    "annotation": {
+        "task_index": {},
+        "human.action.task_description": {
+            "original_key": "task_index"
+        }
+    }
+}
