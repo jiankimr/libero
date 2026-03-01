@@ -1,0 +1,20 @@
+{
+  "task_id": 5,
+  "episode_idx": 0,
+  "task_description": "pick up the book and place it in the back compartment of the caddy",
+  "num_successful_perturbed": 20,
+  "trajectory_length": 166,
+  "eiss_analysis": {
+    "slope": 0.01712818964577757,
+    "rho": 1.0172757181813348,
+    "r_squared": 0.6534772868599146,
+    "contraction_ratio": 234.0607396045131,
+    "intercept": -3.8210137767530683,
+    "is_decaying": false,
+    "strong_eiss": false,
+    "monotonic_ratio": 0.35294117647058826,
+    "std_first_half": 0.023173443139987836,
+    "std_second_half": 0.07808476685396294,
+    "std_decreasing": false
+  }
+}

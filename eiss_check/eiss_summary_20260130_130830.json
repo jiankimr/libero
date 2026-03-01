@@ -1,0 +1,134 @@
+{
+  "timestamp": "20260130_130830",
+  "config": {
+    "eef_noise_std": 0.001,
+    "num_chunks": 16,
+    "replan_steps": 16,
+    "num_perturbations": 20
+  },
+  "num_tasks_tested": 10,
+  "num_tasks_successful": 10,
+  "eiss_satisfied_count": 0,
+  "results": [
+    {
+      "task_id": 0,
+      "episode_idx": 0,
+      "task_description": "put both the alphabet soup and the tomato sauce in the basket",
+      "num_perturbed": 20,
+      "strong_eiss": false,
+      "slope": 0.014318081639736267,
+      "rho": 1.0144210763457824,
+      "r_squared": 0.7791166524090452,
+      "contraction_ratio": 202.73519642361276,
+      "data_dir": "/home/taywonmin/rsec/repos/rsec/LIBERO/eiss_check/task00_ep00_20260130_130830"
+    },
+    {
+      "task_id": 1,
+      "episode_idx": 0,
+      "task_description": "put both the cream cheese box and the butter in the basket",
+      "num_perturbed": 20,
+      "strong_eiss": false,
+      "slope": 0.01468219773728533,
+      "rho": 1.0147905106437787,
+      "r_squared": 0.7006560177839914,
+      "contraction_ratio": 220.4476188620223,
+      "data_dir": "/home/taywonmin/rsec/repos/rsec/LIBERO/eiss_check/task01_ep00_20260130_130830"
+    },
+    {
+      "task_id": 2,
+      "episode_idx": 0,
+      "task_description": "turn on the stove and put the moka pot on it",
+      "num_perturbed": 20,
+      "strong_eiss": false,
+      "slope": 0.010198789132559307,
+      "rho": 1.010250974039183,
+      "r_squared": 0.49194106821891115,
+      "contraction_ratio": 242.7885091391522,
+      "data_dir": "/home/taywonmin/rsec/repos/rsec/LIBERO/eiss_check/task02_ep00_20260130_130830"
+    },
+    {
+      "task_id": 3,
+      "episode_idx": 0,
+      "task_description": "put the black bowl in the bottom drawer of the cabinet and close it",
+      "num_perturbed": 20,
+      "strong_eiss": false,
+      "slope": 0.010286966363016336,
+      "rho": 1.0103400590997196,
+      "r_squared": 0.5136203381303517,
+      "contraction_ratio": 241.8233026557634,
+      "data_dir": "/home/taywonmin/rsec/repos/rsec/LIBERO/eiss_check/task03_ep00_20260130_130830"
+    },
+    {
+      "task_id": 4,
+      "episode_idx": 0,
+      "task_description": "put the white mug on the left plate and put the yellow and white mug on the right plate",
+      "num_perturbed": 20,
+      "strong_eiss": false,
+      "slope": 0.014355254507070727,
+      "rho": 1.014458785986758,
+      "r_squared": 0.6939117774122753,
+      "contraction_ratio": 128.2685727995947,
+      "data_dir": "/home/taywonmin/rsec/repos/rsec/LIBERO/eiss_check/task04_ep00_20260130_130830"
+    },
+    {
+      "task_id": 5,
+      "episode_idx": 0,
+      "task_description": "pick up the book and place it in the back compartment of the caddy",
+      "num_perturbed": 20,
+      "strong_eiss": false,
+      "slope": 0.017383387755110096,
+      "rho": 1.0175353581496898,
+      "r_squared": 0.776310509640964,
+      "contraction_ratio": 103.3045432969799,
+      "data_dir": "/home/taywonmin/rsec/repos/rsec/LIBERO/eiss_check/task05_ep00_20260130_130830"
+    },
+    {
+      "task_id": 6,
+      "episode_idx": 0,
+      "task_description": "put the white mug on the plate and put the chocolate pudding to the right of the plate",
+      "num_perturbed": 20,
+      "strong_eiss": false,
+      "slope": 0.011652788625032884,
+      "rho": 1.0117209468535957,
+      "r_squared": 0.5738468750803714,
+      "contraction_ratio": 147.14531941324532,
+      "data_dir": "/home/taywonmin/rsec/repos/rsec/LIBERO/eiss_check/task06_ep00_20260130_130830"
+    },
+    {
+      "task_id": 7,
+      "episode_idx": 0,
+      "task_description": "put both the alphabet soup and the cream cheese box in the basket",
+      "num_perturbed": 20,
+      "strong_eiss": false,
+      "slope": 0.015633081438550283,
+      "rho": 1.0157559173225443,
+      "r_squared": 0.7142968909239076,
+      "contraction_ratio": 432.9466576337696,
+      "data_dir": "/home/taywonmin/rsec/repos/rsec/LIBERO/eiss_check/task07_ep00_20260130_130830"
+    },
+    {
+      "task_id": 8,
+      "episode_idx": 0,
+      "task_description": "put both moka pots on the stove",
+      "num_perturbed": 20,
+      "strong_eiss": false,
+      "slope": 0.006386227595071123,
+      "rho": 1.0064066630251274,
+      "r_squared": 0.5511814507157033,
+      "contraction_ratio": 110.24605750435896,
+      "data_dir": "/home/taywonmin/rsec/repos/rsec/LIBERO/eiss_check/task08_ep00_20260130_130830"
+    },
+    {
+      "task_id": 9,
+      "episode_idx": 0,
+      "task_description": "put the yellow and white mug in the microwave and close it",
+      "num_perturbed": 20,
+      "strong_eiss": false,
+      "slope": 0.011115247254900916,
+      "rho": 1.0111772511321961,
+      "r_squared": 0.7597988112750133,
+      "contraction_ratio": 553.9377745681461,
+      "data_dir": "/home/taywonmin/rsec/repos/rsec/LIBERO/eiss_check/task09_ep00_20260130_130830"
+    }
+  ]
+}

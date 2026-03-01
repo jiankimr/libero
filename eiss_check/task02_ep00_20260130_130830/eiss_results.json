@@ -1,0 +1,20 @@
+{
+  "task_id": 2,
+  "episode_idx": 0,
+  "task_description": "turn on the stove and put the moka pot on it",
+  "num_successful_perturbed": 20,
+  "trajectory_length": 256,
+  "eiss_analysis": {
+    "slope": 0.010198789132559307,
+    "rho": 1.010250974039183,
+    "r_squared": 0.49194106821891115,
+    "contraction_ratio": 242.7885091391522,
+    "intercept": -2.9273542201903116,
+    "is_decaying": false,
+    "strong_eiss": false,
+    "monotonic_ratio": 0.4043478260869565,
+    "std_first_half": 0.07522553457748042,
+    "std_second_half": 0.10220169600085163,
+    "std_decreasing": false
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "task_id": 0,
+  "episode_idx": 0,
+  "task_description": "put both the alphabet soup and the tomato sauce in the basket",
+  "num_successful_perturbed": 20,
+  "trajectory_length": 256,
+  "eiss_analysis": {
+    "slope": 0.014318081639736267,
+    "rho": 1.0144210763457824,
+    "r_squared": 0.7791166524090452,
+    "contraction_ratio": 202.73519642361276,
+    "intercept": -4.280930347580417,
+    "is_decaying": false,
+    "strong_eiss": false,
+    "monotonic_ratio": 0.23694779116465864,
+    "std_first_half": 0.02378715171579052,
+    "std_second_half": 0.07651967539432272,
+    "std_decreasing": false
+  }
+}

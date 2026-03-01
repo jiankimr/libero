@@ -1,0 +1,20 @@
+{
+  "task_id": 1,
+  "episode_idx": 0,
+  "task_description": "put both the cream cheese box and the butter in the basket",
+  "num_successful_perturbed": 20,
+  "trajectory_length": 238,
+  "eiss_analysis": {
+    "monotonic_ratio": 0.33476394849785407,
+    "is_monotonic": false,
+    "std_first_half": 0.04524018747111599,
+    "std_second_half": 0.09734308378411247,
+    "std_decreasing": false,
+    "r_squared": 0.5726399797652838,
+    "slope": 0.009561692628886422,
+    "intercept": -3.162837162007615,
+    "is_linear": false,
+    "is_decaying": false,
+    "strong_eiss": false
+  }
+}

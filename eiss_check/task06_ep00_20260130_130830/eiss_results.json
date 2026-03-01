@@ -1,0 +1,20 @@
+{
+  "task_id": 6,
+  "episode_idx": 0,
+  "task_description": "put the white mug on the plate and put the chocolate pudding to the right of the plate",
+  "num_successful_perturbed": 20,
+  "trajectory_length": 256,
+  "eiss_analysis": {
+    "slope": 0.011652788625032884,
+    "rho": 1.0117209468535957,
+    "r_squared": 0.5738468750803714,
+    "contraction_ratio": 147.14531941324532,
+    "intercept": -3.6385837884656365,
+    "is_decaying": false,
+    "strong_eiss": false,
+    "monotonic_ratio": 0.4368932038834951,
+    "std_first_half": 0.03661890389982468,
+    "std_second_half": 0.08436722405797406,
+    "std_decreasing": false
+  }
+}

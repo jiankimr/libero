@@ -12,6 +12,12 @@ clip/
 gpt/
 bert/
 logs/
+rollouts/
+data/
+plots/
+analysis/
+videos/
+results/
 
 *.mp4
 libero.egg-info/

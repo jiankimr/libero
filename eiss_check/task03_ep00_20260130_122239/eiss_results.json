@@ -1,0 +1,20 @@
+{
+  "task_id": 3,
+  "episode_idx": 0,
+  "task_description": "put the black bowl in the bottom drawer of the cabinet and close it",
+  "num_successful_perturbed": 20,
+  "trajectory_length": 213,
+  "eiss_analysis": {
+    "monotonic_ratio": 0.33668341708542715,
+    "is_monotonic": false,
+    "std_first_half": 0.046744980528792654,
+    "std_second_half": 0.0926882430683103,
+    "std_decreasing": false,
+    "r_squared": 0.6088212995826314,
+    "slope": 0.0095436635765294,
+    "intercept": -2.8979353115325956,
+    "is_linear": false,
+    "is_decaying": false,
+    "strong_eiss": false
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "task_id": 7,
+  "episode_idx": 0,
+  "task_description": "put both the alphabet soup and the cream cheese box in the basket",
+  "num_successful_perturbed": 13,
+  "trajectory_length": 233,
+  "eiss_analysis": {
+    "slope": 0.015316205088887418,
+    "rho": 1.01543409928627,
+    "r_squared": 0.7022861964269795,
+    "contraction_ratio": 584.3070182463713,
+    "intercept": -3.682058509476744,
+    "is_decaying": false,
+    "strong_eiss": false,
+    "monotonic_ratio": 0.3165137614678899,
+    "std_first_half": 0.036178256766167545,
+    "std_second_half": 0.09106415445072348,
+    "std_decreasing": false
+  }
+}
