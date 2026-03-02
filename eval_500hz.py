@@ -1,19 +1,3 @@
-"""
-eval_500hz.py - 500Hz Sub-step Metric Logging Version
-
-Original eval.py와 동일한 evaluation을 수행하되,
-MuJoCo의 모든 sub-step (500Hz)에서 메트릭을 수집합니다.
-
-핵심 차이:
-- 20Hz control step당 1개 → 25개 데이터 포인트 (500Hz)
-- dt = 0.05s → dt = 0.002s
-- torque, velocity, acceleration이 매 sub-step마다 기록됨
-- bddl_base_domain.py를 수정하지 않고 monkey-patch로 구현
-
-사용법:
-  python eval_500hz.py --args.host localhost --args.port 5555 ...
-"""
-
 import collections
 import dataclasses
 import logging
@@ -55,126 +39,6 @@ from robosuite.utils.buffers import DeltaBuffer
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
-
-
-###############################################################################
-# 500Hz Monkey-Patch: env.step() 내부의 모든 sub-step에서 데이터 수집
-###############################################################################
-
-def patch_env_for_500hz_logging(env):
-    """
-    Monkey-patch the environment to collect data at every MuJoCo sub-step (500Hz).
-    
-    bddl_base_domain.py를 수정하지 않고, 환경 인스턴스의 step() 메서드를
-    런타임에 교체하여 매 sub-step마다 물리량을 기록합니다.
-    
-    기존 step() 호출 체인:
-      ControlEnv.step(action)
-        -> BDDLBaseDomain.step(action)    [action_dim 변환]
-          -> MujocoEnv.step(action)       [25회 sub-step 루프]
-            -> _pre_action(action)        [controller torque 계산]
-            -> sim.step()                 [MuJoCo 물리 적분]
-    
-    패치 후: MujocoEnv.step()의 sub-step 루프를 직접 구현하며,
-    각 sim.step() 이후에 데이터를 수집합니다.
-    
-    수집 타이밍 (매 sub-step 내):
-      1. sim.forward()            - forward kinematics
-      2. _pre_action()            - controller가 torque 계산 → robot.torques에 저장
-      3. sim.step()               - MuJoCo 물리 적분 (torque 적용)
-      4. >>> 데이터 수집 <<<       - torque (적용된 값), qvel/qacc (적분 결과)
-    
-    After each env.step() call, the following are populated on env.env:
-      env.env._substep_torques:  list of (n_joints,) arrays  [25 entries]
-      env.env._substep_qvel:     list of (n_joints,) arrays  [25 entries]
-      env.env._substep_qacc:     list of (n_joints,) arrays  [25 entries]
-    
-    Args:
-        env: ControlEnv (or OffScreenRenderEnv) wrapper instance
-    """
-    inner_env = env.env  # BDDLBaseDomain subclass instance
-    
-    # Initialize sub-step buffers
-    inner_env._substep_torques = []
-    inner_env._substep_qvel = []
-    inner_env._substep_qacc = []
-    
-    def step_500hz(self, action):
-        """
-        Replaces BDDLBaseDomain.step() + MujocoEnv.step() with
-        identical logic plus per-sub-step data collection.
-        """
-        # --- BDDLBaseDomain.step(): action dimension conversion ---
-        if self.action_dim == 4 and len(action) > 4:
-            action = np.array(action)
-            action = np.concatenate((action[:3], action[-1:]), axis=-1)
-        
-        # Clear sub-step buffers for this control step
-        self._substep_torques = []
-        self._substep_qvel = []
-        self._substep_qacc = []
-        
-        # --- MujocoEnv.step() logic (replicated) ---
-        if self.done:
-            raise ValueError("executing action in terminated episode")
-        
-        self.timestep += 1
-        policy_step = True
-        
-        n_substeps = int(self.control_timestep / self.model_timestep)
-        robot = self.robots[0]
-        ref_vel_idx = robot._ref_joint_vel_indexes
-        
-        for i in range(n_substeps):
-            self.sim.forward()
-            self._pre_action(action, policy_step)
-            self.sim.step()
-            self._update_observables()
-            
-            # === 500Hz Data Collection (after sim.step) ===
-            # robot.torques: controller가 계산한 commanded torque (직전에 적용됨)
-            # sim.data.qvel: 물리 적분 후의 joint velocity
-            # sim.data.qacc: 물리 적분 중의 joint acceleration
-            self._substep_torques.append(robot.torques.copy())
-            self._substep_qvel.append(
-                np.array(self.sim.data.qvel[ref_vel_idx], dtype=np.float64)
-            )
-            self._substep_qacc.append(
-                np.array(self.sim.data.qacc[ref_vel_idx], dtype=np.float64)
-            )
-            
-            policy_step = False
-        
-        self.cur_time += self.control_timestep
-        
-        reward, done, info = self._post_action(action)
-        
-        if self.viewer is not None and self.renderer != "mujoco":
-            self.viewer.update()
-        
-        observations = (
-            self.viewer._get_observations()
-            if self.viewer_get_obs
-            else self._get_observations()
-        )
-        
-        # --- BDDLBaseDomain.step(): success check ---
-        done = self._check_success()
-        
-        return observations, reward, done, info
-    
-    # Bind the patched step method to the inner environment instance
-    inner_env.step = types.MethodType(step_500hz, inner_env)
-    
-    # Log patch info
-    n_substeps = int(inner_env.control_timestep / inner_env.model_timestep)
-    sim_hz = 1.0 / inner_env.model_timestep
-    ctrl_hz = 1.0 / inner_env.control_timestep
-    logging.info(f"[500Hz PATCH] Environment step() patched for sub-step logging")
-    logging.info(f"[500Hz PATCH] Simulation: {sim_hz:.0f}Hz (dt={inner_env.model_timestep:.6f}s)")
-    logging.info(f"[500Hz PATCH] Control: {ctrl_hz:.0f}Hz (dt={inner_env.control_timestep:.6f}s)")
-    logging.info(f"[500Hz PATCH] Sub-steps per control step: {n_substeps}")
-    print(f"[500Hz PATCH] ✓ Logging {n_substeps} sub-steps per env.step() at {sim_hz:.0f}Hz", flush=True)
 
 @dataclasses.dataclass
 class Args:
@@ -224,6 +88,126 @@ class Args:
     save_rollouts: bool = True  # Save rollout data as HDF5 for training dataset creation
     rollout_save_path: Optional[str] = None  # Directory to save rollout HDF5 files (default: ./rollouts/)
 
+
+###############################################################################
+# 500Hz Monkey-Patch: Collect data at every sub-step inside env.step()
+###############################################################################
+
+def patch_env_for_500hz_logging(env):
+    """
+    Monkey-patch the environment to collect data at every MuJoCo sub-step (500Hz).
+    
+    Replaces the step() method of the environment instance at runtime
+    without modifying bddl_base_domain.py, recording physical quantities
+    at every sub-step.
+    
+    Original step() call chain:
+      ControlEnv.step(action)
+        -> BDDLBaseDomain.step(action)    [action_dim conversion]
+          -> MujocoEnv.step(action)       [25x sub-step loop]
+            -> _pre_action(action)        [controller computes torque]
+            -> sim.step()                 [MuJoCo physics integration]
+    
+    After patch: Directly reimplements the sub-step loop of MujocoEnv.step(),
+    collecting data after each sim.step() call.
+    
+    Collection timing (inside each sub-step):
+      1. sim.forward()            - forward kinematics
+      2. _pre_action()            - controller computes torque -> stored in robot.torques
+      3. sim.step()               - MuJoCo physics integration (torque applied)
+      4. >>> data collection <<<  - torque (applied value), qvel/qacc (integration result)
+    
+    After each env.step() call, the following are populated on env.env:
+      env.env._substep_torques:  list of (n_joints,) arrays  [25 entries]
+      env.env._substep_qvel:     list of (n_joints,) arrays  [25 entries]
+      env.env._substep_qacc:     list of (n_joints,) arrays  [25 entries]
+    
+    Args:
+        env: ControlEnv (or OffScreenRenderEnv) wrapper instance
+    """
+    inner_env = env.env  # BDDLBaseDomain subclass instance
+    
+    # Initialize sub-step buffers
+    inner_env._substep_torques = []
+    inner_env._substep_qvel = []
+    inner_env._substep_qacc = []
+    
+    def step_500hz(self, action):
+        """
+        Replaces BDDLBaseDomain.step() + MujocoEnv.step() with
+        identical logic plus per-sub-step data collection.
+        """
+        # --- BDDLBaseDomain.step(): action dimension conversion ---
+        if self.action_dim == 4 and len(action) > 4:
+            action = np.array(action)
+            action = np.concatenate((action[:3], action[-1:]), axis=-1)
+        
+        # Clear sub-step buffers for this control step
+        self._substep_torques = []
+        self._substep_qvel = []
+        self._substep_qacc = []
+        
+        # --- MujocoEnv.step() logic (replicated) ---
+        if self.done:
+            raise ValueError("executing action in terminated episode")
+        
+        self.timestep += 1
+        policy_step = True
+        
+        n_substeps = int(self.control_timestep / self.model_timestep)
+        robot = self.robots[0]
+        ref_vel_idx = robot._ref_joint_vel_indexes
+        
+        for i in range(n_substeps):
+            self.sim.forward()
+            self._pre_action(action, policy_step)
+            self.sim.step()
+            self._update_observables()
+            
+            # === 500Hz Data Collection (after sim.step) ===
+            # robot.torques: commanded torque computed by controller (applied in the previous sub-step)
+            # sim.data.qvel: joint velocity after physics integration
+            # sim.data.qacc: joint acceleration during physics integration
+            self._substep_torques.append(robot.torques.copy())
+            self._substep_qvel.append(
+                np.array(self.sim.data.qvel[ref_vel_idx], dtype=np.float64)
+            )
+            self._substep_qacc.append(
+                np.array(self.sim.data.qacc[ref_vel_idx], dtype=np.float64)
+            )
+            
+            policy_step = False
+        
+        self.cur_time += self.control_timestep
+        
+        reward, done, info = self._post_action(action)
+        
+        if self.viewer is not None and self.renderer != "mujoco":
+            self.viewer.update()
+        
+        observations = (
+            self.viewer._get_observations()
+            if self.viewer_get_obs
+            else self._get_observations()
+        )
+        
+        # --- BDDLBaseDomain.step(): success check ---
+        done = self._check_success()
+        
+        return observations, reward, done, info
+    
+    # Bind the patched step method to the inner environment instance
+    inner_env.step = types.MethodType(step_500hz, inner_env)
+    
+    # Log patch info
+    n_substeps = int(inner_env.control_timestep / inner_env.model_timestep)
+    sim_hz = 1.0 / inner_env.model_timestep
+    ctrl_hz = 1.0 / inner_env.control_timestep
+    logging.info(f"[500Hz PATCH] Environment step() patched for sub-step logging")
+    logging.info(f"[500Hz PATCH] Simulation: {sim_hz:.0f}Hz (dt={inner_env.model_timestep:.6f}s)")
+    logging.info(f"[500Hz PATCH] Control: {ctrl_hz:.0f}Hz (dt={inner_env.control_timestep:.6f}s)")
+    logging.info(f"[500Hz PATCH] Sub-steps per control step: {n_substeps}")
+    print(f"[500Hz PATCH] ✓ Logging {n_substeps} sub-steps per env.step() at {sim_hz:.0f}Hz", flush=True)
 
 def unchunk(action_chunk, action_plan, replan_steps, debug=False):
     """
@@ -601,14 +585,6 @@ def eval_libero(args: Args) -> None:
                         if args.debug_action:
                             logging.info(f"Element keys: {element.keys()}")
 
-                        # DEBUG: Verify wrist_image is in element right before sending
-                        if "video.wrist_image" not in element:
-                            print(f"[EVAL BUG] wrist_image NOT in element! Keys: {list(element.keys())}", flush=True)
-                            import traceback
-                            traceback.print_stack()
-                        else:
-                            print(f"[EVAL OK] wrist_image present, shape: {element['video.wrist_image'].shape}", flush=True)
-
                         # Query model to get action
                         action_chunk = policy.get_action(element)
                         
@@ -661,8 +637,8 @@ def eval_libero(args: Args) -> None:
                     gripper_cmd = action[6]         # Last element: gripper command ([-1, 1] range)
                     
                     # DEBUG: Log action values to understand failure
-                    logging.info(f"Action values - pos_delta: {eef_pos_delta}, rot_delta: {eef_rot_delta}, gripper: {gripper_cmd}")
-                    logging.info(f"Action ranges - pos: [{eef_pos_delta.min():.4f}, {eef_pos_delta.max():.4f}], rot: [{eef_rot_delta.min():.4f}, {eef_rot_delta.max():.4f}]")
+                    logging.debug(f"Action values - pos_delta: {eef_pos_delta}, rot_delta: {eef_rot_delta}, gripper: {gripper_cmd}")
+                    logging.debug(f"Action ranges - pos: [{eef_pos_delta.min():.4f}, {eef_pos_delta.max():.4f}], rot: [{eef_rot_delta.min():.4f}, {eef_rot_delta.max():.4f}]")
                     
                     if args.debug_action:
                         logging.info(f"  eef_pos_delta={eef_pos_delta}, eef_rot_delta={eef_rot_delta}, gripper_cmd={gripper_cmd}")
@@ -679,11 +655,7 @@ def eval_libero(args: Args) -> None:
                         [gripper_libero]
                     ])
                     
-                    # DEBUG: Print first few actions of each episode
-                    if t < args.num_steps_wait + 3:
-                        print(f"[DEBUG t={t}] pos=[{libero_action[0]:.3f},{libero_action[1]:.3f},{libero_action[2]:.3f}] rot=[{libero_action[3]:.3f},{libero_action[4]:.3f},{libero_action[5]:.3f}] grip={libero_action[6]:.3f}", flush=True)
-                    
-                    logging.info(f"Libero action (before env.step): {libero_action}")
+                    logging.debug(f"Libero action (before env.step): {libero_action}")
                     
                     if args.debug_action:
                         logging.info(f"Libero action: {libero_action}")
@@ -741,9 +713,9 @@ def eval_libero(args: Args) -> None:
                         ])
                         rollout_actions.append(rollout_action)
                     
-                    # === 500Hz Metric Collection: 매 sub-step 데이터 수집 ===
+                    # === 500Hz Metric Collection: iterate over per-sub-step data ===
                     if args.save_metrics:
-                        # env.step() 내부에서 수집된 25개 sub-step 데이터를 순회
+                        # Iterate over the 25 sub-step data points collected inside env.step()
                         for sub_idx, (sub_torque, sub_vel, sub_acc) in enumerate(zip(
                             env.env._substep_torques,
                             env.env._substep_qvel,
@@ -769,7 +741,7 @@ def eval_libero(args: Args) -> None:
                             actuator_jerk_delta = recent_torques.delta / dt_sim
                             actuator_jerk_delta_list.append(actuator_jerk_delta)
                             
-                            # Electric Energy at 500Hz (부호 유지)
+                            # Electric Energy at 500Hz (preserve sign)
                             t_avg = recent_torques.average  # (prev + curr) / 2
                             v_avg = recent_velocities.average  # (prev + curr) / 2
                             P = np.sum(t_avg * v_avg)  # Power [W]
