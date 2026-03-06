@@ -170,16 +170,20 @@ def compute_extra_metrics(
         regen_energy = np.abs(np.minimum(electric_energy_array, 0.0))  # Absolute value of negative
         net_energy = electric_energy_array  # Keep sign
         
+        total_energy = np.abs(electric_energy_array)  # |E_t| = draw + |regen| per step
+        
         metrics["energy_draw"] = compute_statistics(draw_energy, "energy_draw")
         metrics["energy_regen"] = compute_statistics(regen_energy, "energy_regen")
         metrics["energy_net"] = compute_statistics(net_energy, "energy_net")
+        metrics["energy_total"] = compute_statistics(total_energy, "energy_total")
         
         # Summary
         total_draw = float(np.sum(draw_energy))
         total_regen = float(np.sum(regen_energy))
         total_net = float(np.sum(net_energy))
+        total_abs = float(np.sum(total_energy))
         
-        logging.info(f"Energy Summary: draw={total_draw:.6f}J, regen={total_regen:.6f}J, net={total_net:.6f}J")
+        logging.info(f"Energy Summary: draw={total_draw:.6f}J, regen={total_regen:.6f}J, net={total_net:.6f}J, total={total_abs:.6f}J")
     
     return metrics
 

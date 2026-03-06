@@ -257,7 +257,8 @@ def unchunk(action_chunk, action_plan, replan_steps, debug=False):
 
 
 def add_alternating_noise(
-    action_chunk: dict, noise_scale: float, noise_dim: Optional[str], replan_steps: int, debug: bool = False
+    action_chunk: dict, noise_scale: float, noise_dim: Optional[str], replan_steps: int,
+    half_period: int = 2, debug: bool = False,
 ) -> dict:
     """Adds alternating noise to a specific dimension of the action chunk.
     
@@ -271,6 +272,8 @@ def add_alternating_noise(
         noise_scale: magnitude of noise
         noise_dim: dimension to add noise to (with optional index notation)
         replan_steps: number of steps to add noise to
+        half_period: number of consecutive same-sign steps before flipping.
+                     1 → +-+-  2 → ++--++--  3 → +++---  etc.
         debug: if True, log noise application details
     """
     # Always create a copy to ensure consistent data structure
@@ -311,11 +314,10 @@ def add_alternating_noise(
             logging.info(f"Adding noise to {actual_key} (scale={noise_scale})")
             logging.info(f"Original values (first {num_steps_to_noise} steps): {values[:num_steps_to_noise]}")
 
-    # Create an alternating pattern of [1, -1, 1, -1, ...]
-    #alternating_pattern = np.array([1 if i % 2 == 0 else -1 for i in range(num_steps_to_noise)])
-    
-    # Create an alternating pattern of [1, 1, -1, -1, 1, 1, -1, -1, ...] (++ -- ++ --)
-    alternating_pattern = np.array([1 if (i // 2) % 2 == 0 else -1 for i in range(num_steps_to_noise)])
+    # Alternating pattern controlled by half_period:
+    #   half_period=1 → +-+-+-  half_period=2 → ++--++--  half_period=3 → +++---  etc.
+    hp = max(1, half_period)
+    alternating_pattern = np.array([1 if (i // hp) % 2 == 0 else -1 for i in range(num_steps_to_noise)])
 
 
     # Scale the pattern by the noise_scale

@@ -72,6 +72,7 @@ class Args:
     # Action noise parameters
     action_noise_scale: float = 0.0
     action_noise_dim: Optional[str] = None
+    noise_half_period: int = 2
 
     # LIBERO environment-specific parameters
     task_suite_name: str = "libero_10"
@@ -490,8 +491,9 @@ def eval_libero_parallel(args: Args) -> None:
         date_time_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         noise_str = f"noise_{args.action_noise_scale:.4f}".replace(".", "")
         dim_str = f"_dim_{args.action_noise_dim}" if args.action_noise_dim else ""
+        hp_str = f"_hp{args.noise_half_period}" if args.noise_half_period != 2 else ""
         suffix_str = f"_{args.output_suffix}" if args.output_suffix else ""
-        base_name = f"{date_time_str}_{noise_str}{dim_str}{suffix_str}"
+        base_name = f"{date_time_str}_{noise_str}{dim_str}{hp_str}{suffix_str}"
 
         if args.video_out_path is None:
             args.video_out_path = f"./videos/video_{args.task_suite_name}_{base_name}"
@@ -726,6 +728,7 @@ def eval_libero_parallel(args: Args) -> None:
                                 args.action_noise_scale,
                                 args.action_noise_dim,
                                 args.replan_steps,
+                                half_period=args.noise_half_period,
                                 debug=args.debug_action,
                             )
 

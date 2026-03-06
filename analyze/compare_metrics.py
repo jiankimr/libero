@@ -54,10 +54,12 @@ COMPARISON_METRICS = {
     "🔋 Energy (전기 에너지)": [
         "energy_draw.mean",
         "energy_draw.sum",
-        "energy_net.mean",
-        "energy_net.sum",
         "energy_regen.mean",
         "energy_regen.sum",
+        "energy_net.mean",
+        "energy_net.sum",
+        "energy_total.mean",
+        "energy_total.sum",
     ],
     "⚙️  Torque (모터 토크)": [
         "torque_average.mean",
@@ -702,35 +704,22 @@ def calculate_damage(
                 amp = range_val / 2.0  # 응력 진폭
                 max_amp = max(max_amp, amp)
                 
-                # Goodman 보정 (평균 응력의 영향을 고려)
-                # Goodman 선도: σ_f = σ_a × σ_ult / (σ_ult - σ_m)
-                # σ_a: 응력 진폭, σ_m: 평균 응력
                 if use_goodman:
-                    # 전체 신호의 평균 응력 사용 (mean_val = np.mean(torque_data))
-                    sigma_m = abs(mean_val)  # 평균 응력
+                    # Per-cycle mean stress in original (un-centered) coordinates:
+                    # cycle_mean_stress is relative to centered data, add back global mean
+                    sigma_m = abs(cycle_mean_stress + mean_val)
                     
-                    # σ_ult - σ_m > 0 인지 확인 (분모가 0이 되지 않도록)
                     denominator = sigma_ult - sigma_m
                     if denominator > 1e-6:
-                        # Goodman 계수: σ_f / σ_a = σ_ult / (σ_ult - σ_m)
                         goodman_factor = sigma_ult / denominator
                         effective_amp = amp * goodman_factor
                     else:
-                        # σ_m >= σ_ult인 경우 (매우 높은 평균 응력) - 보수적으로 처리
-                        logger.warning(f"Joint {j}: 평균 응력({sigma_m:.4f})이 인장 강도({sigma_ult:.4f})를 초과합니다. Goodman 보정 스킵.")
-                        effective_amp = amp * 100  # 극도로 보수적인 페널티
+                        logger.warning(f"Joint {j}: per-cycle mean stress ({sigma_m:.4f}) >= σ_ult ({sigma_ult:.4f}). Applying conservative penalty.")
+                        effective_amp = amp * 100
                 else:
                     effective_amp = amp
                 
-                # 사이클 열림 여부에 따른 상수 C 설정
-                # Rainflow에서 나온 count를 기반으로:
-                # count = 1.0이면 완전한 사이클 (C=1)
-                # count = 0.5이면 반 사이클 (C=0.5)
-                # 보수적으로 모든 사이클을 완전 사이클(C=1)로 처리
-                C = 1.0  # 보수적 평가
-                
-                # 손상 계산: D = C * (amplitude^m) * count
-                Dj += C * (effective_amp ** m) * count
+                Dj += (effective_amp ** m) * count
                 total_count += count
                 total_half_cycles += 1
             
